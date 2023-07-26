@@ -1,0 +1,173 @@
+---
+title: "Functional analysis using Humann"
+author: "Simeon Nthuku"
+date: "2023-06-17"
+output: html_document
+---
+
+This is a workflow of functional analysis of IgA-binding bacteria performed on 16 Control samples and 14 CIS samples using Humann
+<https://huttenhower.sph.harvard.edu/humann/> Biobakery-based tool after which the resulting pathway abundance files were subjected to
+differential pathway abundance analysis to reveal significantly occurring pathways in the two conditions
+
+
+
+
+## Humann tool commands
+
+This is an overview of what was performed at command-live level using the Humann functional profiling tool.
+
+Running concataneted samples against the humann-based chocophlan and uniref nucleotide and protein databases respectively.
+```{bash humann, attr.source='.numberLines', eval=FALSE}
+
+for file in *.fastq.gz
+do
+humann \
+-i $file \
+-o Humann_Results_3 \ 
+--threads 36 \
+--nucleotide-database /db/outils/humann-3.6/chocophlan \
+--protein-database /db/outils/humann-3.6/uniref \
+--taxonomic-profile $file.tsv \
+--remove-temp-output
+done
+
+```
+
+
+Join all the pathway abundance files into one table to faciliate downstream analysis.
+Then, if required,  normalize the abundance counts 
+
+```{bash humann_join, attr.source='.numberLines', eval=FALSE}
+humann_join_tables \
+--input Humann_path_CIS_abundance \
+--output diff_humann_cis_pathabundance.tsv 
+
+
+
+humann_renorm_table \
+-i diff_humann_positive_pathabundance.tsv \
+-o diff_humann_positive_pathabundance.tsv_cpm.tsv \
+--units cpm
+
+```
+
+
+## Differential pathway abundance analysis
+
+
+The two input datasets include the file with the IgA postive bacteria pathway abundance counts which can be found [here](https://www.dropbox.com/s/ijpprosv50ngba8/diff_positive_file_abundance.tsv?dl=0) as well as the
+[metadata](https://www.dropbox.com/s/907y4b4fynyaeqh/metadata_Pos.tsv?dl=0) file which is required for differential analysis.
+
+
+
+
+
+Read in the pathway abundance and metadata file(file pre-processing was previously performed which involved restoring the pathway
+abundance file to R-friendly *.tsv* format)
+
+```{r setup}
+
+path_abundance_raw <- read.table("/Users/cimi_bioinformatics/Desktop/Bioinf/Humann/diff_positive_file_abundance.tsv", sep = "\t", 
+                             header = TRUE )
+
+
+metadata_path_abundance <- read.table("/Users/cimi_bioinformatics/Desktop/Bioinf/Humann/metadata_Pos.tsv", sep = "\t", 
+                             header = TRUE)
+
+```
+
+Assign the "Pathway" column as the rownames of the sample-based counts
+```{r pathway}
+rownames(path_abundance_raw) <- NULL
+rownames(path_abundance_raw) <- path_abundance_raw$Pathway
+path_abundance_raw$Pathway <- NULL
+```
+
+
+
+Assign similar sample names to metadata file to allow for downstream correspondance with DeSeq2
+```{r sample}
+rownames(metadata_path_abundance) <- NULL
+rownames(metadata_path_abundance) <- colnames(path_abundance_raw)
+metadata_path_abundance$Sample <- NULL
+
+```
+
+Create DESeq object by using the pathway abundance file, metadata file and assigning the differential parameter which is  "Condition" in our case (CTRL vs CIS)
+```{r deseq, eval=FALSE}
+#round function used to coerce matrix counts as integers
+dds_pos <- DESeqDataSetFromMatrix(countData = round(df_path_abundance), colData = metadata_path_abundance, design = ~ Condition)
+ds_path_pos = DESeq(dds_pos)
+
+```
+
+
+
+Getting a picture of the differential analysis results
+```{r deseqres, eval=FALSE}
+resMF_pos<- results(ds_path_pos)
+head(resMF_pos)
+
+# To view results in data frame format
+##res_MF_df <- as.data.frame(resMF_pos)
+
+```
+
+Perform regularized log transformation which transforms the original count data to the log2 scale by fitting a model with a term for each sample and a prior distribution on the coefficients which is estimated from the data.
+
+```{r vst, eval=FALSE}
+## Vst Method for analysis 
+
+rld_pos <- rlog( dds_pos, fitType='mean', blind=TRUE)
+topVarpathways_pos <- head( order( rowVars( assay(ds_path_pos) ), decreasing=TRUE ), 50)
+```
+
+
+Examine the effects of the transformation on the variance
+```{r transform, eval=FALSE}
+dds_transform <- normTransform(dds_pos)
+
+meanSdPlot(assay(dds_transform))
+
+meanSdPlot(assay(rld_pos))
+```
+
+
+Select top 20 differentially abundant pathway
+```{r subset, eval=FALSE}
+topVarPathways_pos <- head( order( rowVars( assay(ds_path_pos) ), decreasing=TRUE ), 50)
+```
+
+
+Make a subset of the log transformed counts for just the top 20 differentially abundant pathways
+```{r counts, eval=FALSE}
+top25Counts_pos<-assay(rld_pos)[topVarGenes_pos,]
+
+```
+
+Plot heatmap based on row clustering for top differentially abundant pathways
+
+```{r heatmapplot, eval=FALSE}
+df <- as.data.frame(colData(dds_pos)["Condition"])
+
+pheatmap(top25Counts_pos, cluster_cols=FALSE,annotation_col = df)
+
+```
+
+
+Plot volcano plot for differentially abundant pathways with specified p-value and fold change cutoff
+```{r volcanoplot, eval=FALSE}
+
+EnhancedVolcano(resMF_pos,
+                lab = rownames(resMF_pos),
+                x = 'log2FoldChange',
+                y = 'pvalue',
+                selectLab = (" d"),
+                title = 'Control versus CIS',
+                pCutoff = 1e-5,
+                FCcutoff = 5.0,
+                pointSize = 3.0,
+                labSize = 3.0)
+
+```
+
